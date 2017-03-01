@@ -14,32 +14,44 @@ __global__ void histogram_kernel_shared(unsigned int *input, unsigned int *bins,
     int i = blockIdx.x * blockDim.x + threadIdx.x;  
     int stride = blockDim.x * gridDim.x;
 
-    __shared__ unsigned int binsShared[]; //extern??
+    extern __shared__ unsigned int binsShared[]; //extern??
 
+	for (int x = threadIdx.x; x < binLength; x += blockDim.x)
+	{
+		binsShared[x] = 0;
+	}
 
-    for (int i = 0; i < inputLength; i += stride)
+	__syncthreads();
+
+    for (int x = i; x < inputLength; x += stride)
     {
-        atomicAdd(&binShared[input[i]], 1);
+        atomicAdd(&(binsShared[input[x]]), 1);
     }
 
     __syncthreads();
 
-    for (int i = blockIdx.x; i < binLength; i += blockDim.x)
+    for (int x = threadIdx.x; x < binLength; x += blockDim.x)
     {
 
-        atomicAdd(&bins[i], binShared[i]);
+        atomicAdd(&(bins[x]), binsShared[x]);
     }
 
     __syncthreads();
 
 
-    if (i < binLength)
-    {
-        if (bins[i] > 127)
-            bins[i] = 127;
-    }
 
 
+}
+
+__global__ void truncate(unsigned int *input, unsigned int *bins, unsigned int inputLength, unsigned int binLength)
+{
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (i < binLength)
+	{
+		if (bins[i] > 127)
+			bins[i] = 127;
+	}
 }
 
 __global__ void histogram_kernel(unsigned int *input, unsigned int *bins, unsigned int inputLength, unsigned int binLength)
@@ -47,11 +59,19 @@ __global__ void histogram_kernel(unsigned int *input, unsigned int *bins, unsign
     int i = blockIdx.x * blockDim.x + threadIdx.x;  
     int stride = blockDim.x * gridDim.x;
 
+	__syncthreads();
 
-    for (int i = 0; i < inputLength; i += stride)
+ 
+	if (i < binLength)
     {
-        atomicAdd(&bins[input[i]], 1);
+        atomicAdd(&(bins[input[i]]), 1);
+	
+		if (i == 0)
+			bins[0] = 0;
+
     }
+
+	bins[0] = 0; //remove
 
 
     __syncthreads();
@@ -59,8 +79,10 @@ __global__ void histogram_kernel(unsigned int *input, unsigned int *bins, unsign
 
     if (i < binLength)
     {
-        if (bin[i] > 127)
-            bin[i] = 127;
+		if (bins[i] > 127)
+		{
+			bins[i] = 127;
+		}
     }
 
 
@@ -120,10 +142,17 @@ int main(int argc, char *argv[]) {
 
 	// TODO: Perform kernel computation here
 
-    dim3 gridDim(30);
+	cudaMemset((void *)deviceBins, 0, NUM_BINS * sizeof(unsigned int));
+	memset((void *)hostBins, 0, NUM_BINS * sizeof(unsigned int));
+	
+
+	CUDA_CHECK(cudaDeviceSynchronize());
+
+    dim3 gridDim(32);
     dim3 blockDim(512);
 
-    histogram_kernel_shared<<<gridDim, blockDim>>>(deviceInput, deviceBins, inputLength, NUM_BINS);
+    histogram_kernel_shared<<<gridDim, blockDim, NUM_BINS * sizeof(unsigned int)>>>(deviceInput, deviceBins, inputLength, NUM_BINS);
+	truncate << <gridDim, blockDim, NUM_BINS * sizeof(unsigned int) >> >(deviceInput, deviceBins, inputLength, NUM_BINS);
 
 
 	// You should call the following lines after you call the kernel.
@@ -135,7 +164,6 @@ int main(int argc, char *argv[]) {
 	wbTime_start(Copy, "Copying output memory to the CPU");
 	// TODO: Copy the GPU memory back to the CPU here
 
-    cudaMemcpy(hostInput, deviceInput, inputLength * sizeof(unsigned int), cudaMemcpyDeviceToHost);
     cudaMemcpy(hostBins, deviceBins, NUM_BINS * sizeof(unsigned int), cudaMemcpyDeviceToHost);
 
 	CUDA_CHECK(cudaDeviceSynchronize());
